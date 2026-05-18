@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-50">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ store.shop_name or store.shop_domain }} — Growvoria Feeds</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .feed-url { font-size: 0.72rem; word-break: break-all; line-height: 1.4; }
+    .copy-btn  { transition: background-color 0.15s, color 0.15s; }
+  </style>
+</head>
+<body class="h-full font-sans text-slate-800 antialiased">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="bg-indigo-700 shadow-lg">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center text-white font-extrabold text-lg select-none">G</div>
+        <div>
+          <span class="text-white font-bold text-lg leading-none">Growvoria Feeds</span>
+          <p class="text-indigo-300 text-xs mt-0.5">Product Feed Generator</p>
+        </div>
+      </div>
+      <span class="bg-indigo-900/50 text-indigo-100 text-xs px-3 py-1.5 rounded-full font-mono hidden sm:block">
+        {{ store.shop_domain }}
+      </span>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+
+    <!-- ── Store overview ───────────────────────────────────────────────── -->
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 class="text-xl font-semibold">{{ store.shop_name or store.shop_domain }}</h1>
+          <p class="text-slate-500 text-sm mt-1 space-x-2">
+            <span>Store currency: <strong class="text-slate-700">{{ store.shop_currency or "USD" }}</strong></span>
+            <span class="text-slate-300">·</span>
+            {% if last_generated %}
+              <span>Last refresh: <strong class="text-slate-700">{{ last_generated.strftime("%d %b %Y, %H:%M") }} UTC</strong></span>
+            {% else %}
+              <span class="text-amber-600 font-medium">Feeds pending first generation…</span>
+            {% endif %}
+          </p>
+        </div>
+        <div class="flex items-center gap-5">
+          <div class="text-center">
+            <p class="text-2xl font-bold text-indigo-600">{{ store.product_count or 0 }}</p>
+            <p class="text-xs text-slate-500 uppercase tracking-wide">Products</p>
+          </div>
+          <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium
+            {% if store.is_active %}bg-green-100 text-green-700{% else %}bg-red-100 text-red-700{% endif %}">
+            {% if store.is_active %}● Active{% else %}● Inactive{% endif %}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Feed URL cards ────────────────────────────────────────────────── -->
+    <div>
+      <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">Your Feed URLs</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+
+        {# feed_regions: list of (slug, country, currency, flag) passed from dashboard route #}
+        {% for slug, country, currency, flag in feed_regions %}
+        {% set url = feed_urls[slug] %}
+        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 flex flex-col gap-3 hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-2xl" role="img" aria-label="{{ country }}">{{ flag }}</span>
+              <div>
+                <p class="font-semibold text-sm">{{ country }}</p>
+                <p class="text-xs text-slate-500">{{ currency }}</p>
+              </div>
+            </div>
+            <a href="{{ url }}" target="_blank" rel="noopener"
+               class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">
+              View ↗
+            </a>
+          </div>
+          <div class="bg-slate-50 rounded-lg px-2.5 py-2 font-mono feed-url text-slate-600 select-all">{{ url }}</div>
+          <button
+            onclick="copyUrl('{{ url }}', this)"
+            class="copy-btn w-full text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg py-1.5 font-semibold">
+            Copy URL
+          </button>
+        </div>
+        {% endfor %}
+
+      </div>
+    </div>
+
+    <!-- ── Actions ──────────────────────────────────────────────────────── -->
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-4">Actions</h2>
+      <div class="flex flex-col sm:flex-row gap-3">
+        <button
+          id="refresh-btn"
+          onclick="refreshFeeds('{{ store.shop_domain }}')"
+          class="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700
+                 text-white text-sm font-semibold rounded-xl transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0
+                 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Refresh All Feeds
+        </button>
+        <a href="https://help.shopify.com/en/manual/products/import-export"
+           target="_blank" rel="noopener"
+           class="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-slate-100
+                  hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-xl transition-colors">
+          Shopify Docs ↗
+        </a>
+      </div>
+      <p class="text-xs text-slate-400 mt-3">Feeds auto-refresh every 4 hours. Manual refresh is always available.</p>
+    </div>
+
+    <!-- ── Integration guide ─────────────────────────────────────────────── -->
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-5">Integration Guide</h2>
+      <div class="grid sm:grid-cols-2 gap-8">
+
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xl">📌</span>
+            <h3 class="font-semibold text-slate-800">Pinterest Catalogs</h3>
+          </div>
+          <ol class="text-sm text-slate-600 space-y-1.5 list-decimal list-inside">
+            <li>Open <strong>Pinterest Business Hub</strong> → Catalogs</li>
+            <li>Click <em>"Create Catalog"</em> → <em>"RSS / ATOM feed"</em></li>
+            <li>Paste your feed URL (use US feed for USD pricing)</li>
+            <li>Set update frequency to <strong>Daily</strong></li>
+            <li>Submit and wait for Pinterest to crawl your products</li>
+          </ol>
+        </div>
+
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xl">🛒</span>
+            <h3 class="font-semibold text-slate-800">Google Merchant Center</h3>
+          </div>
+          <ol class="text-sm text-slate-600 space-y-1.5 list-decimal list-inside">
+            <li>Open <strong>Merchant Center</strong> → Products → Feeds</li>
+            <li>Click <em>"+"</em> → choose <em>"Scheduled fetch"</em></li>
+            <li>Enter a feed name and your target country/language</li>
+            <li>Paste the corresponding regional feed URL</li>
+            <li>Set fetch frequency to <strong>Every 24 hours</strong></li>
+          </ol>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Feed schema reference ─────────────────────────────────────────── -->
+    <div class="bg-slate-800 rounded-2xl p-6 text-sm">
+      <h2 class="text-slate-300 text-xs font-semibold uppercase tracking-wide mb-3">Feed Schema (Google Shopping RSS)</h2>
+      <pre class="text-green-400 font-mono text-xs overflow-x-auto leading-relaxed"><code>&lt;rss version="2.0" xmlns:g="http://base.google.com/ns/1.0"&gt;
+  &lt;channel&gt;
+    &lt;item&gt;
+      &lt;g:id&gt;          variant ID
+      &lt;title&gt;         product + variant name
+      &lt;description&gt;   plain-text description (max 5000 chars)
+      &lt;link&gt;          product URL with ?variant=ID
+      &lt;g:image_link&gt;  primary image
+      &lt;g:additional_image_link&gt;  (up to 5)
+      &lt;g:availability&gt; in stock
+      &lt;g:price&gt;       29.99 USD
+      &lt;g:condition&gt;   new
+      &lt;g:brand&gt;       vendor name
+      &lt;g:product_type&gt; Shopify product type
+      &lt;g:item_group_id&gt; parent product ID
+      &lt;g:mpn&gt;         SKU (if present)
+    &lt;/item&gt;
+  &lt;/channel&gt;
+&lt;/rss&gt;</code></pre>
+    </div>
+
+  </main>
+
+  <footer class="max-w-6xl mx-auto px-4 sm:px-6 py-6 text-center text-xs text-slate-400">
+    Growvoria Feeds — Built by <a href="https://growvoria.com" class="hover:underline">Growvoria</a>
+  </footer>
+
+  <script>
+    function copyUrl(url, btn) {
+      navigator.clipboard.writeText(url).then(() => {
+        const prev = btn.textContent;
+        btn.textContent = "✓ Copied!";
+        btn.classList.replace("bg-indigo-50",  "bg-green-100");
+        btn.classList.replace("text-indigo-700","text-green-700");
+        setTimeout(() => {
+          btn.textContent = prev;
+          btn.classList.replace("bg-green-100",  "bg-indigo-50");
+          btn.classList.replace("text-green-700","text-indigo-700");
+        }, 2000);
+      }).catch(() => {
+        // Fallback for older browsers
+        const ta = document.createElement("textarea");
+        ta.value = url;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      });
+    }
+
+    async function refreshFeeds(shopDomain) {
+      const btn = document.getElementById("refresh-btn");
+      btn.disabled = true;
+      btn.innerHTML = `<svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+      </svg> Refreshing…`;
+      try {
+        const res = await fetch(`/dashboard/${shopDomain}/refresh`, { method: "POST" });
+        if (res.ok) {
+          btn.innerHTML = "✓ Refresh queued — reloading…";
+          btn.classList.replace("bg-indigo-600","bg-green-600");
+          setTimeout(() => location.reload(), 2500);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          btn.textContent = "Error: " + (err.detail || "try again");
+          btn.disabled = false;
+        }
+      } catch {
+        btn.textContent = "Network error — try again";
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>

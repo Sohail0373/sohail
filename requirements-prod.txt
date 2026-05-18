@@ -1,0 +1,4 @@
+# Production extras — PostgreSQL driver
+# The Dockerfile installs this; local dev uses SQLite and doesn't need it.
+-r requirements.txt
+psycopg2-binary==2.9.10

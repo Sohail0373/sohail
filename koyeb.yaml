@@ -1,0 +1,47 @@
+name: growvoria-feeds
+
+services:
+  - name: web
+    type: web
+    git:
+      branch: main
+    docker:
+      dockerfile: Dockerfile
+    ports:
+      - port: 8000
+        protocol: http
+    env:
+      - key: APP_URL
+        value: https://growvoria-feeds.koyeb.app
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DEBUG
+        value: "false"
+      - key: FEED_REFRESH_HOURS
+        value: "4"
+      - key: EXCHANGE_RATE_TTL
+        value: "3600"
+      - key: FEEDS_DIR
+        value: /app/feeds
+      # Secrets — set these in the Koyeb dashboard under "Secrets"
+      - key: SHOPIFY_API_KEY
+        secret: shopify-api-key
+      - key: SHOPIFY_API_SECRET
+        secret: shopify-api-secret
+      - key: DATABASE_URL
+        secret: database-url
+      - key: SECRET_KEY
+        secret: growvoria-secret-key
+    health_checks:
+      - grace_period: 15
+        interval: 30
+        path: /health
+        port: 8000
+        protocol: http
+        timeout: 5
+    scaling:
+      min: 1
+      max: 1   # Free tier — 1 instance only
+    resources:
+      memory: 512Mi
+      vcpu: 0.1

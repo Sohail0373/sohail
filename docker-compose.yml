@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./feeds:/app/feeds
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # PostgreSQL — swap DATABASE_URL in .env to use this
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: growvoria
+      POSTGRES_PASSWORD: growvoria_secret
+      POSTGRES_DB: growvoria_feeds
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U growvoria -d growvoria_feeds"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
