@@ -111,13 +111,10 @@ def _build_feed(
 
             v_id = _gid_number(v_gid)
 
-            # Skip unavailable variants
-            if not v.get("availableForSale"):
-                continue
-
+            # Determine availability
+            available = v.get("availableForSale", False)
             inv = v.get("inventoryQuantity")
-            if inv is not None and inv <= 0:
-                continue
+            availability_str = "in stock" if available else "out of stock"
 
             # Price validation
             try:
@@ -158,7 +155,7 @@ def _build_feed(
             etree.SubElement(item, f"{G}image_link").text = all_images[0]
             for extra in all_images[1:6]:          # up to 5 additional images
                 etree.SubElement(item, f"{G}additional_image_link").text = extra
-            etree.SubElement(item, f"{G}availability").text = "in stock"
+            etree.SubElement(item, f"{G}availability").text = availability_str
             etree.SubElement(item, f"{G}price").text = price_str
             etree.SubElement(item, f"{G}condition").text = "new"
             if vendor:
