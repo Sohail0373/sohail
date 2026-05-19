@@ -20,11 +20,13 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import os
     init_db()
     start_scheduler()
     logger.info("%s is ready", settings.APP_NAME)
-    logger.info("SHOPIFY_API_KEY set: %s", bool(settings.SHOPIFY_API_KEY))
-    logger.info("SHOPIFY_API_KEY prefix: %s", settings.SHOPIFY_API_KEY[:6] if settings.SHOPIFY_API_KEY else "EMPTY")
+    raw_key = os.environ.get("SHOPIFY_API_KEY", "NOT_IN_ENV")
+    logger.info("RAW ENV SHOPIFY_API_KEY: %s", raw_key[:8] if raw_key != "NOT_IN_ENV" else "NOT_IN_ENV")
+    logger.info("RAW ENV APP_URL: %s", os.environ.get("APP_URL", "NOT_IN_ENV"))
     yield
     scheduler.shutdown(wait=False)
     logger.info("%s shut down", settings.APP_NAME)
