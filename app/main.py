@@ -23,6 +23,8 @@ async def lifespan(app: FastAPI):
     init_db()
     start_scheduler()
     logger.info("%s is ready", settings.APP_NAME)
+    logger.info("SHOPIFY_API_KEY set: %s", bool(settings.SHOPIFY_API_KEY))
+    logger.info("SHOPIFY_API_KEY prefix: %s", settings.SHOPIFY_API_KEY[:6] if settings.SHOPIFY_API_KEY else "EMPTY")
     yield
     scheduler.shutdown(wait=False)
     logger.info("%s shut down", settings.APP_NAME)
