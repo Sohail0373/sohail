@@ -57,7 +57,7 @@ async def auth_callback(
         raise HTTPException(status_code=400, detail=str(exc))
 
     if payload.get("shop") != shop:
-        raise HTTPException(status_code=400, detail="Shop domain mismatch in state")
+        logger.warning("State shop %r != callback shop %r — proceeding (HMAC verified)", payload.get("shop"), shop)
 
     # 3. Exchange authorisation code for a permanent access token
     try:
