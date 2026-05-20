@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import os
-    init_db()
+    try:
+        init_db()
+        logger.info("Database tables initialised OK")
+    except Exception as exc:
+        logger.critical("STARTUP FAILED — could not initialise database: %s", exc, exc_info=True)
+        raise
     start_scheduler()
     logger.info("%s is ready", settings.APP_NAME)
     raw_key = os.environ.get("SHOPIFY_API_KEY", "NOT_IN_ENV")
