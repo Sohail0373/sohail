@@ -30,6 +30,9 @@ FEED_REGIONS: dict[str, tuple[str, str, str]] = {
     "no": ("Norway",         "NOK", "🇳🇴"),
     "se": ("Sweden",         "SEK", "🇸🇪"),
     "ch": ("Switzerland",    "CHF", "🇨🇭"),
+    "fr": ("France",         "EUR", "🇫🇷"),
+    "it": ("Italy",          "EUR", "🇮🇹"),
+    "de": ("Germany",        "EUR", "🇩🇪"),
 }
 
 # Convenience alias: region slug → currency code (used by generator)
