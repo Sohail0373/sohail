@@ -6,12 +6,16 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from .config import settings
 
 _connect_args: dict = {}
-if settings.DATABASE_URL.startswith("sqlite"):
+_db_url = settings.DATABASE_URL
+if _db_url.startswith("sqlite"):
     # SQLite requires this for multi-threaded FastAPI usage
     _connect_args["check_same_thread"] = False
+elif _db_url.startswith("postgres"):
+    # Railway PostgreSQL requires SSL
+    _connect_args["sslmode"] = "require"
 
 engine = create_engine(
-    settings.DATABASE_URL,
+    _db_url,
     connect_args=_connect_args,
     pool_pre_ping=True,
 )
