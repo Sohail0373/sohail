@@ -73,12 +73,3 @@ app.include_router(webhooks_router)
 @app.get("/health", tags=["System"])
 async def health():
     return {"status": "ok", "app": settings.APP_NAME}
-
-
-@app.get("/", tags=["System"])
-async def root():
-    return JSONResponse({
-        "name": settings.APP_NAME,
-        "docs": f"{settings.APP_URL}/docs" if settings.DEBUG else "disabled in production",
-        "install": f"{settings.APP_URL}/install?shop=yourstore.myshopify.com",
-    })
