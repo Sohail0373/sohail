@@ -8,10 +8,13 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;color:#1a1a2e;min-height:100vh}
 a{color:inherit;text-decoration:none}
-header{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:18px 32px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 16px rgba(79,70,229,.35)}
+header{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:18px 32px;display:flex;align-items:center;justify-content:space-between;gap:14px;box-shadow:0 2px 16px rgba(79,70,229,.35)}
+.header-left{display:flex;align-items:center;gap:14px}
 .logo{width:42px;height:42px;background:rgba(255,255,255,.2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.4rem}
 header h1{font-size:1.35rem;font-weight:700}
 header p{font-size:.8rem;opacity:.8;margin-top:2px}
+.header-credit{font-size:.75rem;opacity:.7;text-align:right;white-space:nowrap}
+.header-credit strong{display:block;font-size:.85rem;opacity:1;font-weight:600}
 .container{max-width:1080px;margin:0 auto;padding:28px 16px}
 .card{background:#fff;border-radius:16px;box-shadow:0 2px 12px rgba(0,0,0,.07);padding:26px;margin-bottom:22px}
 .card-title{font-size:.95rem;font-weight:700;color:#374151;margin-bottom:18px;display:flex;align-items:center;gap:8px}
@@ -81,10 +84,16 @@ input[type=text]:focus,select:focus{border-color:#6366f1;box-shadow:0 0 0 3px rg
 <body>
 
 <header>
-  <div class="logo">🌿</div>
-  <div>
-    <h1>Growvoria Feed Generator</h1>
-    <p>Google Shopping &amp; Pinterest XML feeds — any Shopify store, no app required</p>
+  <div class="header-left">
+    <div class="logo">🌿</div>
+    <div>
+      <h1>Growvoria Feed Generator</h1>
+      <p>Google Shopping &amp; Pinterest XML feeds — any Shopify store, no app required</p>
+    </div>
+  </div>
+  <div class="header-credit">
+    Developed by
+    <strong>Sohail Asghar</strong>
   </div>
 </header>
 
@@ -135,13 +144,21 @@ input[type=text]:focus,select:focus{border-color:#6366f1;box-shadow:0 0 0 3px rg
     <div class="feeds-grid" id="feeds-grid"></div>
   </div>
 
-  <!-- All Stores -->
+  <!-- All Stores — PIN protected -->
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div class="card-title" style="margin:0">📦 All Generated Stores</div>
-      <button class="btn btn-ghost btn-sm" onclick="loadStores()">🔄 Refresh</button>
+      <button class="btn btn-ghost btn-sm" id="unlock-btn" onclick="unlockStores()">🔒 Admin Only</button>
     </div>
-    <div id="stores-list"><p class="empty">Loading...</p></div>
+    <div id="stores-locked" style="text-align:center;padding:20px 0;color:#9ca3af;font-size:.88rem">
+      🔒 Restricted — click "Admin Only" to unlock
+    </div>
+    <div id="stores-section" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+        <button class="btn btn-ghost btn-sm" onclick="loadStores()">🔄 Refresh</button>
+      </div>
+      <div id="stores-list"></div>
+    </div>
   </div>
 
 </div>
@@ -265,7 +282,37 @@ function regenStore(slug){
 }
 
 document.getElementById('domain').addEventListener('keydown',e=>{if(e.key==='Enter')generate();});
-loadStores();
+
+// ── Admin PIN for stores section ─────────────────────────────────────────────
+// SHA-256 hash of your PIN — change PIN by updating this hash
+// Current PIN: sa786 → hash below
+const ADMIN_HASH = 'bcc5e73e492d0acaf81ef895e6da4327a09f07d05ae5c115ac76ae09384b63e1';
+
+async function sha256(str){
+  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+async function unlockStores(){
+  // Check session
+  if(sessionStorage.getItem('admin_ok')==='1'){showStores();return;}
+  const pin=prompt('Enter admin PIN:');
+  if(!pin)return;
+  const hash=await sha256(pin);
+  if(hash===ADMIN_HASH){
+    sessionStorage.setItem('admin_ok','1');
+    showStores();
+  }else{
+    alert('Wrong PIN');
+  }
+}
+
+function showStores(){
+  document.getElementById('stores-locked').style.display='none';
+  document.getElementById('stores-section').style.display='block';
+  document.getElementById('unlock-btn').textContent='🔓 Admin';
+  loadStores();
+}
 </script>
 </body>
 </html>
