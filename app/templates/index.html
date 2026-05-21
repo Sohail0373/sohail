@@ -30,10 +30,15 @@ input[type=text]:focus,select:focus{border-color:#6366f1;box-shadow:0 0 0 3px rg
 .hint{font-size:.78rem;color:#9ca3af;margin-top:10px}
 
 /* Progress */
-#prog-wrap{display:none;margin-top:18px;padding:16px;background:#f5f3ff;border-radius:10px;border:1px solid #ede9fe}
-.prog-bar-bg{background:#ede9fe;border-radius:99px;height:6px;margin:10px 0}
-.prog-bar{background:linear-gradient(90deg,#6366f1,#8b5cf6);height:6px;border-radius:99px;width:0;transition:width .5s ease}
-.prog-text{font-size:.85rem;color:#5b21b6;display:flex;align-items:center;gap:6px}
+#prog-wrap{display:none;margin-top:18px;padding:18px;background:#f5f3ff;border-radius:12px;border:1px solid #ede9fe}
+.prog-stages{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.stage{padding:3px 10px;border-radius:99px;font-size:.72rem;font-weight:600;background:#ede9fe;color:#a78bfa;transition:.3s}
+.stage.active{background:#6366f1;color:#fff}
+.stage.done{background:#d1fae5;color:#065f46}
+.prog-bar-bg{background:#ede9fe;border-radius:99px;height:8px;margin:8px 0}
+.prog-bar{background:linear-gradient(90deg,#6366f1,#8b5cf6);height:8px;border-radius:99px;width:0;transition:width .6s ease}
+.prog-text{font-size:.85rem;color:#5b21b6;display:flex;align-items:center;gap:8px;margin-top:6px}
+.prog-detail{font-size:.78rem;color:#7c3aed;margin-top:4px;min-height:18px}
 .spin{width:14px;height:14px;border:2px solid #c4b5fd;border-top-color:#6366f1;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 @keyframes spin{to{transform:rotate(360deg)}}
 
@@ -47,7 +52,7 @@ input[type=text]:focus,select:focus{border-color:#6366f1;box-shadow:0 0 0 3px rg
 .res-header{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:18px}
 .res-title{font-size:1.05rem;font-weight:700;color:#1f2937}
 .res-meta{font-size:.82rem;color:#6b7280;margin-top:3px}
-.stat-pills{display:flex;gap:8px;flex-wrap:wrap}
+.stat-pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
 .pill{display:inline-flex;align-items:center;gap:4px;padding:4px 12px;border-radius:99px;font-size:.78rem;font-weight:600}
 .pill-green{background:#d1fae5;color:#065f46}
 .pill-blue{background:#dbeafe;color:#1e40af}
@@ -71,7 +76,6 @@ input[type=text]:focus,select:focus{border-color:#6366f1;box-shadow:0 0 0 3px rg
 .store-item:last-child{border:none}
 .s-domain{font-weight:600;font-size:.9rem;color:#1f2937}
 .s-meta{font-size:.77rem;color:#9ca3af;margin-top:2px}
-.s-tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.72rem;font-weight:600;background:#ede9fe;color:#5b21b6;margin-right:4px}
 .empty{color:#9ca3af;font-size:.88rem;text-align:center;padding:20px 0}
 
 @media(max-width:580px){
@@ -122,9 +126,17 @@ input[type=text]:focus,select:focus{border-color:#6366f1;box-shadow:0 0 0 3px rg
     </div>
     <p class="hint">ℹ️ Works for any live public Shopify store. No token or app installation needed.</p>
 
+    <!-- Live progress panel -->
     <div id="prog-wrap">
+      <div class="prog-stages">
+        <span class="stage" id="st-fetch">① Fetching products</span>
+        <span class="stage" id="st-rates">② Exchange rates</span>
+        <span class="stage" id="st-gen">③ Building XML feeds</span>
+        <span class="stage" id="st-done">④ Complete</span>
+      </div>
       <div class="prog-bar-bg"><div class="prog-bar" id="prog"></div></div>
-      <p class="prog-text"><span class="spin"></span><span id="prog-text">Starting...</span></p>
+      <p class="prog-text"><span class="spin" id="prog-spin"></span><span id="prog-text">Starting…</span></p>
+      <p class="prog-detail" id="prog-detail"></p>
     </div>
     <div id="err-box" class="alert err" style="display:none"></div>
   </div>
@@ -135,6 +147,7 @@ input[type=text]:focus,select:focus{border-color:#6366f1;box-shadow:0 0 0 3px rg
       <div>
         <div class="res-title">✅ <span id="r-name"></span></div>
         <div class="res-meta" id="r-meta"></div>
+        <div class="stat-pills" id="r-pills"></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-ghost btn-sm" onclick="copyAll()">📋 Copy All URLs</button>
@@ -168,92 +181,201 @@ const FLAGS={us:'🇺🇸',ae:'🇦🇪',uk:'🇬🇧',sa:'🇸🇦',jp:'🇯�
 const NAMES={us:'United States',ae:'UAE',uk:'United Kingdom',sa:'Saudi Arabia',jp:'Japan',kr:'South Korea',au:'Australia',sg:'Singapore',hk:'Hong Kong',qa:'Qatar',kw:'Kuwait',bh:'Bahrain',ca:'Canada',nl:'Netherlands',br:'Brazil',my:'Malaysia',th:'Thailand',no:'Norway',se:'Sweden',ch:'Switzerland',fr:'France',it:'Italy',de:'Germany'};
 const CURR={us:'USD',ae:'AED',uk:'GBP',sa:'SAR',jp:'JPY',kr:'KRW',au:'AUD',sg:'SGD',hk:'HKD',qa:'QAR',kw:'KWD',bh:'BHD',ca:'CAD',nl:'EUR',br:'BRL',my:'MYR',th:'THB',no:'NOK',se:'SEK',ch:'CHF',fr:'EUR',it:'EUR',de:'EUR'};
 
-let lastData = null;
+let lastData   = null;
+let _pollTimer = null;
 
-function prog(pct,txt){document.getElementById('prog').style.width=pct+'%';document.getElementById('prog-text').textContent=txt;}
+// ── Progress helpers ──────────────────────────────────────────────────────────
+
+function setStage(name){
+  // name: 'fetching'|'rates'|'generating'|'done'|'error'
+  const map={fetching:'st-fetch',rates:'st-rates',generating:'st-gen',done:'st-done'};
+  const order=['fetching','rates','generating','done'];
+  const idx=order.indexOf(name);
+  order.forEach((s,i)=>{
+    const el=document.getElementById(map[s]);
+    if(!el)return;
+    el.className='stage'+(i<idx?' done':i===idx?' active':'');
+  });
+}
+
+function setProgress(pct, main, detail){
+  document.getElementById('prog').style.width = Math.min(pct,100)+'%';
+  if(main)  document.getElementById('prog-text').textContent   = main;
+  if(detail!==undefined) document.getElementById('prog-detail').textContent = detail||'';
+}
+
+function showProg(show){
+  document.getElementById('prog-wrap').style.display = show?'block':'none';
+  document.getElementById('prog-spin').style.display = show?'inline-block':'none';
+}
+
+// ── Main generate flow ────────────────────────────────────────────────────────
 
 async function generate(){
-  const domain=document.getElementById('domain').value.trim();
-  const currency=document.getElementById('currency').value;
+  const domain   = document.getElementById('domain').value.trim();
+  const currency = document.getElementById('currency').value;
   if(!domain){alert('Please enter a store domain');return;}
-  document.getElementById('gen-btn').disabled=true;
-  document.getElementById('prog-wrap').style.display='block';
-  document.getElementById('results').style.display='none';
-  document.getElementById('err-box').style.display='none';
-  prog(8,'Connecting to store...');
+
+  clearInterval(_pollTimer);
+  document.getElementById('gen-btn').disabled = true;
+  document.getElementById('results').style.display = 'none';
+  document.getElementById('err-box').style.display  = 'none';
+  showProg(true);
+  setStage('fetching');
+  setProgress(3,'Connecting to store…','');
+
+  let jobId;
   try{
-    prog(15,'Fetching products from Shopify...');
-    const r=await fetch('/api/generate',{
+    const r = await fetch('/api/generate',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({shop_domain:domain,shop_currency:currency})
+      body:JSON.stringify({shop_domain:domain, shop_currency:currency})
     });
-    prog(80,'Building XML feeds...');
-    if(!r.ok){const e=await r.json();throw new Error(e.detail||'Generation failed');}
-    const data=await r.json();
-    prog(100,'Done!');
-    lastData=data;
-    setTimeout(()=>{
-      document.getElementById('prog-wrap').style.display='none';
-      showResults(data);
-      loadStores();
-    },400);
+    if(!r.ok){const e=await r.json();throw new Error(e.detail||'Could not start job');}
+    const d = await r.json();
+    jobId   = d.job_id;
   }catch(e){
-    document.getElementById('prog-wrap').style.display='none';
-    const eb=document.getElementById('err-box');
-    eb.textContent='❌ '+e.message;
-    eb.style.display='block';
-  }finally{
-    document.getElementById('gen-btn').disabled=false;
+    showError(e.message);
+    return;
+  }
+
+  // Poll every 2 seconds
+  _pollTimer = setInterval(()=>pollJob(jobId), 2000);
+}
+
+async function pollJob(jobId){
+  try{
+    const r = await fetch('/api/jobs/'+jobId);
+    if(!r.ok) return;
+    const job = await r.json();
+    applyJobState(job, jobId);
+  }catch(_){}
+}
+
+function applyJobState(job, jobId){
+  const phase = job.phase || 'queued';
+
+  if(phase==='fetching' || phase==='queued'){
+    setStage('fetching');
+    const page  = job.page     || 0;
+    const prods = job.products || 0;
+    // 0–60% during fetch
+    const pct = page>0 ? Math.min(3 + page * 0.5, 60) : 5;
+    setProgress(pct,
+      `Fetching page ${page} from Shopify…`,
+      prods>0 ? `${prods.toLocaleString()} products fetched so far` : ''
+    );
+  }
+  else if(phase==='rates'){
+    setStage('rates');
+    const prods = job.products||0;
+    setProgress(62,
+      'Loading live exchange rates…',
+      `${prods.toLocaleString()} products ready`
+    );
+  }
+  else if(phase==='generating'){
+    setStage('generating');
+    const n   = job.region_num    || 0;
+    const tot = job.total_regions || 23;
+    const pct = 65 + Math.round((n/tot)*30);
+    setProgress(pct,
+      `Building XML feed ${n} of ${tot}…`,
+      job.message||''
+    );
+  }
+  else if(phase==='done'){
+    clearInterval(_pollTimer);
+    setStage('done');
+    setProgress(100,'✅ All feeds generated!','');
+    document.getElementById('prog-spin').style.display='none';
+
+    lastData = job;
+    setTimeout(()=>{
+      showProg(false);
+      showResults(job);
+      if(sessionStorage.getItem('admin_ok')==='1') loadStores();
+    }, 600);
+    document.getElementById('gen-btn').disabled = false;
+  }
+  else if(phase==='error'){
+    clearInterval(_pollTimer);
+    showError(job.error || job.message || 'Unknown error');
   }
 }
 
+function showError(msg){
+  showProg(false);
+  const eb = document.getElementById('err-box');
+  eb.textContent = '❌ '+msg;
+  eb.style.display = 'block';
+  document.getElementById('gen-btn').disabled = false;
+}
+
+// ── Results ───────────────────────────────────────────────────────────────────
+
 function showResults(d){
-  document.getElementById('r-name').textContent=d.shop_name||d.shop_domain;
-  document.getElementById('r-meta').textContent=
-    d.products+' products · '+d.items+' feed items · 23 regional feeds generated';
-  const grid=document.getElementById('feeds-grid');
-  grid.innerHTML='';
+  document.getElementById('r-name').textContent = d.shop_name || d.shop_domain || '';
+  document.getElementById('r-meta').textContent =
+    `${(d.products||0).toLocaleString()} products · ${(d.items||0).toLocaleString()} feed items · 23 regional feeds`;
+
+  const pills = document.getElementById('r-pills');
+  pills.innerHTML =
+    `<span class="pill pill-green">✓ ${(d.products||0).toLocaleString()} products</span>` +
+    `<span class="pill pill-blue">✓ ${(d.items||0).toLocaleString()} items/feed</span>` +
+    `<span class="pill pill-purple">✓ 23 regions</span>`;
+
+  const grid = document.getElementById('feeds-grid');
+  grid.innerHTML = '';
+  const urls = d.feed_urls || {};
   Object.keys(FLAGS).forEach(region=>{
-    const url=d.feed_urls[region];
-    const div=document.createElement('div');
-    div.className='feed-card';
-    div.innerHTML=`
+    const url = urls[region]||'';
+    const div = document.createElement('div');
+    div.className = 'feed-card';
+    div.innerHTML = `
       <div class="fc-top">
-        <div class="fc-left"><span class="fc-flag">${FLAGS[region]}</span><span class="fc-name">${NAMES[region]}</span></div>
+        <div class="fc-left">
+          <span class="fc-flag">${FLAGS[region]}</span>
+          <span class="fc-name">${NAMES[region]}</span>
+        </div>
         <span class="fc-curr">${CURR[region]}</span>
       </div>
-      <div class="fc-url" onclick="copyUrl('${url}',null)">${url}</div>
+      <div class="fc-url" onclick="copyUrl('${url}',null)" title="Click to copy">${url}</div>
       <button class="copy-btn" onclick="copyUrl('${url}',this)">Copy URL</button>
     `;
     grid.appendChild(div);
   });
-  document.getElementById('results').style.display='block';
+  document.getElementById('results').style.display = 'block';
   document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 function copyUrl(url,btn){
   navigator.clipboard.writeText(url).then(()=>{
-    if(!btn)return;
-    btn.textContent='✓ Copied!';btn.classList.add('done');
+    if(!btn) return;
+    btn.textContent='✓ Copied!'; btn.classList.add('done');
     setTimeout(()=>{btn.textContent='Copy URL';btn.classList.remove('done');},1800);
   });
 }
 
 function copyAll(){
-  if(!lastData)return;
-  const lines=Object.keys(FLAGS).map(r=>NAMES[r]+': '+lastData.feed_urls[r]).join('\n');
-  navigator.clipboard.writeText(lines).then(()=>alert('All 23 feed URLs copied to clipboard!'));
+  if(!lastData||!lastData.feed_urls) return;
+  const lines = Object.keys(FLAGS).map(r=>NAMES[r]+': '+lastData.feed_urls[r]).join('\n');
+  navigator.clipboard.writeText(lines).then(()=>alert('All 23 feed URLs copied!'));
 }
 
+// ── Store list ────────────────────────────────────────────────────────────────
+
 async function loadStores(){
-  const el=document.getElementById('stores-list');
+  const el = document.getElementById('stores-list');
   try{
-    const r=await fetch('/api/stores');
-    const d=await r.json();
-    const stores=d.stores||[];
-    if(!stores.length){el.innerHTML='<p class="empty">No feeds generated yet. Use the form above to get started!</p>';return;}
-    el.innerHTML=stores.map(s=>`
+    const r = await fetch('/api/stores');
+    const d = await r.json();
+    const stores = d.stores||[];
+    if(!stores.length){
+      el.innerHTML='<p class="empty">No feeds generated yet.</p>';
+      return;
+    }
+    el.innerHTML = stores.map(s=>`
       <div class="store-item">
         <div>
           <div class="s-domain">🏪 ${s.slug}</div>
@@ -265,41 +387,41 @@ async function loadStores(){
         </div>
       </div>
     `).join('');
-  }catch(e){el.innerHTML='<p class="empty" style="color:#ef4444">Could not load stores.</p>';}
+  }catch(e){
+    el.innerHTML='<p class="empty" style="color:#ef4444">Could not load stores.</p>';
+  }
 }
 
 async function loadStore(slug){
-  const r=await fetch('/api/store/'+slug);
+  const r = await fetch('/api/store/'+slug);
   if(!r.ok){alert('Store not found');return;}
-  const d=await r.json();
-  document.getElementById('domain').value=slug+'.myshopify.com';
+  const d = await r.json();
+  document.getElementById('domain').value = slug+'.myshopify.com';
   showResults(d);
 }
 
 function regenStore(slug){
-  document.getElementById('domain').value=slug+'.myshopify.com';
+  document.getElementById('domain').value = slug+'.myshopify.com';
   generate();
 }
 
-document.getElementById('domain').addEventListener('keydown',e=>{if(e.key==='Enter')generate();});
+document.getElementById('domain').addEventListener('keydown',e=>{
+  if(e.key==='Enter') generate();
+});
 
-// ── Admin PIN for stores section ─────────────────────────────────────────────
-// SHA-256 hash of your PIN — change PIN by updating this hash
-// Current PIN: sa786 → hash below
+// ── Admin PIN ─────────────────────────────────────────────────────────────────
 const ADMIN_HASH = 'bcc5e73e492d0acaf81ef895e6da4327a09f07d05ae5c115ac76ae09384b63e1';
 
 async function sha256(str){
-  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
+  const buf = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
 async function unlockStores(){
-  // Check session
   if(sessionStorage.getItem('admin_ok')==='1'){showStores();return;}
-  const pin=prompt('Enter admin PIN:');
-  if(!pin)return;
-  const hash=await sha256(pin);
-  if(hash===ADMIN_HASH){
+  const pin = prompt('Enter admin PIN:');
+  if(!pin) return;
+  if(await sha256(pin)===ADMIN_HASH){
     sessionStorage.setItem('admin_ok','1');
     showStores();
   }else{
@@ -308,9 +430,9 @@ async function unlockStores(){
 }
 
 function showStores(){
-  document.getElementById('stores-locked').style.display='none';
-  document.getElementById('stores-section').style.display='block';
-  document.getElementById('unlock-btn').textContent='🔓 Admin';
+  document.getElementById('stores-locked').style.display  = 'none';
+  document.getElementById('stores-section').style.display = 'block';
+  document.getElementById('unlock-btn').textContent       = '🔓 Admin';
   loadStores();
 }
 </script>

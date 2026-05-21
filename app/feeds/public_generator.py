@@ -1,14 +1,22 @@
 """
 Public feed generator — no Shopify app or OAuth required.
 Uses Shopify's public products.json endpoint (available on all live stores).
+
+Designed for large catalogues (50k–70k+ products):
+  - Streaming XML via lxml.etree.xmlfile — no giant in-memory tree
+  - Cursor-based pagination with page-param fallback
+  - Exponential back-off on Shopify bot-detection (403/429/430)
+  - Progress callback for real-time job status updates
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import random
 import re
 import tempfile
-from typing import AsyncIterator
+from typing import Callable
 
 import httpx
 from lxml import etree
@@ -24,6 +32,21 @@ G    = f"{{{G_NS}}}"
 _HTML_TAG_RE   = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+ProgressCb = Callable[[dict], None]
+
+# Realistic browser headers to avoid Shopify bot-detection
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _strip_html(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", _HTML_TAG_RE.sub(" ", text)).strip()
@@ -37,114 +60,108 @@ def _convert_price(amount: float, from_curr: str, to_curr: str, rates: dict) -> 
     return f"{converted:.2f} {to_curr}"
 
 
-def _atomic_write(path: str, data: bytes) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+def _noop_cb(_: dict) -> None:
+    pass
 
 
-async def _fetch_shop_name(shop_domain: str, client: httpx.AsyncClient) -> str:
-    """Best-effort: grab shop name from storefront HTML."""
-    try:
-        r = await client.get(f"https://{shop_domain}/", timeout=10)
-        m = re.search(
-            r'<meta[^>]+property=["\']og:site_name["\'][^>]+content=["\']([^"\']+)["\']',
-            r.text, re.I,
-        )
-        if m:
-            return m.group(1).strip()
-        m2 = re.search(r'<title>([^<]+)</title>', r.text, re.I)
-        if m2:
-            return m2.group(1).strip().split("|")[0].strip()
-    except Exception:
-        pass
-    return shop_domain
+# ── Shopify product fetcher ────────────────────────────────────────────────────
 
-
-async def fetch_products_public(shop_domain: str) -> tuple[list[dict], str]:
+async def fetch_products_public(
+    shop_domain: str,
+    progress_cb: ProgressCb = _noop_cb,
+) -> tuple[list[dict], str]:
     """
-    Fetch all active products via public products.json (no auth).
-    Returns (products_list, shop_name).
-    Primary: cursor-based pagination via Link header (Shopify recommended).
-    Fallback: page-based pagination if Link header is absent but batch is full.
-    Handles Shopify bot-detection (403/429/430) with exponential back-off + retry.
-    """
-    import asyncio
-    import random
+    Fetch ALL products via Shopify's public products.json (no auth).
 
-    # Realistic browser User-Agent to avoid Shopify bot detection
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    Handles stores with 50k–70k+ products:
+      - Cursor-based pagination (Link header) as primary method
+      - Page-param fallback when Link header absent but batch is full
+      - Exponential back-off (15s→30s→60s→120s→240s) on 403/429/430
+      - Randomised inter-page delays to avoid bot fingerprint
+    """
     products: list[dict] = []
 
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(60.0, connect=15.0),
-        headers=headers,
+        headers=_HEADERS,
         follow_redirects=True,
     ) as client:
-        shop_name = await _fetch_shop_name(shop_domain, client)
+        # Best-effort: grab store name from storefront HTML
+        shop_name = shop_domain
+        try:
+            r = await client.get(f"https://{shop_domain}/", timeout=10)
+            m = re.search(
+                r'<meta[^>]+property=["\']og:site_name["\'][^>]+content=["\']([^"\']+)["\']',
+                r.text, re.I,
+            )
+            if m:
+                shop_name = m.group(1).strip()
+            else:
+                m2 = re.search(r'<title>([^<]+)</title>', r.text, re.I)
+                if m2:
+                    shop_name = m2.group(1).strip().split("|")[0].strip()
+        except Exception:
+            pass
 
         next_url: str | None = f"https://{shop_domain}/products.json?limit=250"
-        page = 0
-        retries = 0
-        MAX_RETRIES = 5
+        page          = 0
+        retries       = 0
+        MAX_RETRIES   = 6
 
         while next_url:
             page += 1
-            logger.info("[%s] fetching page %d (total so far: %d)",
+
+            progress_cb({
+                "phase":    "fetching",
+                "page":     page,
+                "products": len(products),
+                "message":  f"Fetching page {page} — {len(products):,} products so far…",
+            })
+            logger.info("[%s] page %d — %d products fetched so far",
                         shop_domain, page, len(products))
 
             try:
                 r = await client.get(next_url)
 
-                # ── Rate-limit / bot-detection: back off and retry ─────────────
+                # ── Bot-detection / rate-limit: back off and retry ─────────────
                 if r.status_code in (403, 429, 430):
                     retries += 1
                     if retries > MAX_RETRIES:
                         logger.error(
-                            "[%s] blocked after %d retries on page %d — returning %d products fetched so far",
+                            "[%s] blocked after %d retries on page %d — "
+                            "returning %d products fetched so far",
                             shop_domain, MAX_RETRIES, page, len(products),
                         )
                         break
-                    # Exponential back-off: 15s, 30s, 60s, 120s, 240s
-                    wait = 15 * (2 ** (retries - 1)) + random.uniform(0, 5)
+                    wait = 15 * (2 ** (retries - 1)) + random.uniform(0, 8)
                     logger.warning(
-                        "[%s] HTTP %d on page %d (retry %d/%d) — sleeping %.0fs",
+                        "[%s] HTTP %d page %d (retry %d/%d) — sleeping %.0fs",
                         shop_domain, r.status_code, page, retries, MAX_RETRIES, wait,
                     )
+                    progress_cb({
+                        "phase":    "fetching",
+                        "page":     page,
+                        "products": len(products),
+                        "message":  (
+                            f"Shopify rate-limited us — waiting {wait:.0f}s before retry "
+                            f"(attempt {retries}/{MAX_RETRIES})…"
+                        ),
+                    })
                     await asyncio.sleep(wait)
                     page -= 1   # don't count this as a successful page
                     continue
 
-                retries = 0     # reset on success
+                retries = 0     # reset on clean response
                 r.raise_for_status()
 
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
-                # 401/403 on page 1 almost certainly means password-protected
                 if status in (401, 403) and page == 1:
                     raise RuntimeError(
                         f"Shopify returned {status} for {shop_domain}. "
                         "Store may be password-protected or the domain is wrong."
                     ) from exc
-                # Otherwise log and stop — return whatever we have
-                logger.error("[%s] HTTP %d on page %d — stopping early with %d products",
+                logger.error("[%s] HTTP %d on page %d — stopping with %d products",
                              shop_domain, status, page, len(products))
                 break
 
@@ -154,8 +171,8 @@ async def fetch_products_public(shop_domain: str) -> tuple[list[dict], str]:
                     logger.error("[%s] too many network errors — stopping with %d products",
                                  shop_domain, len(products))
                     break
-                wait = 5 * retries
-                logger.warning("[%s] network error (retry %d/%d): %s — sleeping %ds",
+                wait = 8 * retries + random.uniform(0, 4)
+                logger.warning("[%s] network error retry %d/%d: %s — %.0fs",
                                shop_domain, retries, MAX_RETRIES, exc, wait)
                 await asyncio.sleep(wait)
                 page -= 1
@@ -163,12 +180,11 @@ async def fetch_products_public(shop_domain: str) -> tuple[list[dict], str]:
 
             batch = r.json().get("products", [])
             if not batch:
-                logger.info("[%s] empty batch on page %d — done", shop_domain, page)
                 break
             products.extend(batch)
 
-            # ── Cursor-based next page (Shopify preferred method) ──────────────
-            next_url = None
+            # ── Cursor-based next page (Shopify's recommended method) ──────────
+            next_url   = None
             link_header = r.headers.get("Link", "")
             if link_header:
                 for part in link_header.split(","):
@@ -179,189 +195,277 @@ async def fetch_products_public(shop_domain: str) -> tuple[list[dict], str]:
                             next_url = m.group(1)
                             break
 
-            # ── Fallback: page param when Link header absent but batch is full ─
+            # ── Fallback: page param when Link header absent but batch full ────
             if not next_url and len(batch) == 250:
                 next_url = (
                     f"https://{shop_domain}/products.json?limit=250&page={page + 1}"
                 )
-                logger.debug("[%s] no Link header — using page fallback: page %d",
+                logger.debug("[%s] no Link header — page fallback: page %d",
                              shop_domain, page + 1)
 
-            # Polite delay between pages (randomised to avoid bot fingerprint)
+            # Polite randomised delay between pages
             if next_url:
-                await asyncio.sleep(random.uniform(0.5, 1.2))
+                await asyncio.sleep(random.uniform(0.6, 1.4))
 
-    logger.info("[%s] fetched %d products total (%d pages)",
+    logger.info("[%s] fetch complete — %d products, %d pages",
                 shop_domain, len(products), page)
     return products, shop_name
 
 
-def _build_feed_public(
-    shop_domain:   str,
+# ── Streaming XML builder ──────────────────────────────────────────────────────
+
+def _build_feed_streaming(
+    path:          str,
     shop_name:     str,
     shop_url:      str,
     products:      list[dict],
     currency:      str,
     shop_currency: str,
     rates:         dict[str, float],
-) -> tuple[bytes, int, int]:
-    nsmap   = {"g": G_NS}
-    rss     = etree.Element("rss", nsmap=nsmap)
-    rss.set("version", "2.0")
-    channel = etree.SubElement(rss, "channel")
-    etree.SubElement(channel, "title").text       = f"{shop_name} — Product Feed"
-    etree.SubElement(channel, "link").text        = shop_url
-    etree.SubElement(channel, "description").text = (
-        f"Google Shopping / Pinterest Catalog feed — {currency}"
-    )
+) -> tuple[int, int]:
+    """
+    Write a single-region XML feed directly to *path* using lxml's streaming
+    xmlfile API.  No full element tree is built — memory stays flat regardless
+    of catalogue size.
+    Returns (included_items, skipped_items).
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    seen: set[str] = set()
-    included = skipped = 0
+    # Write to a temp file in the same dir, then atomically rename
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            with etree.xmlfile(fh, encoding="UTF-8") as xf:
+                xf.write_declaration()
+                with xf.element("rss", nsmap={"g": G_NS}, version="2.0"):
+                    with xf.element("channel"):
+                        # Channel-level metadata
+                        title_el = etree.Element("title")
+                        title_el.text = f"{shop_name} — Product Feed"
+                        xf.write(title_el)
 
-    for product in products:
-        p_id         = str(product.get("id", ""))
-        title        = (product.get("title") or "").strip()
-        if not title:
-            skipped += 1
-            continue
+                        link_el = etree.Element("link")
+                        link_el.text = shop_url
+                        xf.write(link_el)
 
-        description  = _strip_html(product.get("body_html") or title)[:5000]
-        handle       = product.get("handle", "")
-        product_url  = f"{shop_url}/products/{handle}"
-        product_type = (product.get("product_type") or "").strip()
-        vendor       = (product.get("vendor") or "").strip()
-        tags_raw     = product.get("tags") or ""
-        tags: list[str] = (
-            [t.strip() for t in tags_raw.split(",") if t.strip()]
-            if isinstance(tags_raw, str) else list(tags_raw)
-        )
+                        desc_el = etree.Element("description")
+                        desc_el.text = (
+                            f"Google Shopping / Pinterest Catalog feed — {currency}"
+                        )
+                        xf.write(desc_el)
 
-        product_images: list[str] = [
-            img["src"] for img in (product.get("images") or []) if img.get("src")
-        ]
+                        # Items
+                        seen:     set[str] = set()
+                        included = skipped = 0
 
-        for variant in (product.get("variants") or []):
-            v_id = str(variant.get("id", ""))
-            if v_id in seen:
-                continue
-            seen.add(v_id)
+                        for product in products:
+                            p_id  = str(product.get("id", ""))
+                            title = (product.get("title") or "").strip()
+                            if not title:
+                                skipped += 1
+                                continue
 
-            available        = variant.get("available", False)
-            availability_str = "in stock" if available else "out of stock"
+                            description  = _strip_html(
+                                product.get("body_html") or title
+                            )[:5000]
+                            handle       = product.get("handle", "")
+                            product_url  = f"{shop_url}/products/{handle}"
+                            product_type = (product.get("product_type") or "").strip()
+                            vendor       = (product.get("vendor") or "").strip()
+                            tags_raw     = product.get("tags") or ""
+                            tags: list[str] = (
+                                [t.strip() for t in tags_raw.split(",") if t.strip()]
+                                if isinstance(tags_raw, str) else list(tags_raw)
+                            )
 
-            try:
-                raw_price = float(variant.get("price") or 0)
-            except (TypeError, ValueError):
-                raw_price = 0.0
-            if raw_price <= 0:
-                skipped += 1
-                continue
+                            product_images: list[str] = [
+                                img["src"]
+                                for img in (product.get("images") or [])
+                                if img.get("src")
+                            ]
 
-            v_img_id  = variant.get("image_id")
-            v_img_url = None
-            if v_img_id:
-                for img in (product.get("images") or []):
-                    if img.get("id") == v_img_id:
-                        v_img_url = img.get("src")
-                        break
-            all_images = list(dict.fromkeys(filter(None, [v_img_url] + product_images)))
-            if not all_images:
-                skipped += 1
-                continue
+                            for variant in (product.get("variants") or []):
+                                v_id = str(variant.get("id", ""))
+                                if v_id in seen:
+                                    continue
+                                seen.add(v_id)
 
-            v_title    = (variant.get("title") or "").strip()
-            item_title = (
-                f"{title} — {v_title}"
-                if v_title and v_title.lower() != "default title"
-                else title
-            )[:150]
+                                available = variant.get("available", False)
 
-            price_str = _convert_price(raw_price, shop_currency, currency, rates)
-            item_url  = f"{product_url}?variant={v_id}"
+                                try:
+                                    raw_price = float(variant.get("price") or 0)
+                                except (TypeError, ValueError):
+                                    raw_price = 0.0
+                                if raw_price <= 0:
+                                    skipped += 1
+                                    continue
 
-            item = etree.SubElement(channel, "item")
-            etree.SubElement(item, f"{G}id").text               = v_id
-            etree.SubElement(item, "title").text                = item_title
-            etree.SubElement(item, "description").text          = description
-            etree.SubElement(item, "link").text                 = item_url
-            etree.SubElement(item, f"{G}image_link").text       = all_images[0]
-            for extra in all_images[1:6]:
-                etree.SubElement(item, f"{G}additional_image_link").text = extra
-            etree.SubElement(item, f"{G}availability").text     = availability_str
-            etree.SubElement(item, f"{G}price").text            = price_str
-            etree.SubElement(item, f"{G}condition").text        = "new"
-            if vendor:
-                etree.SubElement(item, f"{G}brand").text        = vendor
-            if product_type:
-                etree.SubElement(item, f"{G}product_type").text = product_type
-            etree.SubElement(item, f"{G}item_group_id").text    = p_id
-            sku = (variant.get("sku") or "").strip()
-            if sku:
-                etree.SubElement(item, f"{G}mpn").text          = sku
-            if tags:
-                etree.SubElement(item, f"{G}custom_label_0").text = ", ".join(tags[:10])
-            included += 1
+                                # Variant-specific image, fall back to product images
+                                v_img_id  = variant.get("image_id")
+                                v_img_url = None
+                                if v_img_id:
+                                    for img in (product.get("images") or []):
+                                        if img.get("id") == v_img_id:
+                                            v_img_url = img.get("src")
+                                            break
+                                all_images = list(dict.fromkeys(
+                                    filter(None, [v_img_url] + product_images)
+                                ))
+                                if not all_images:
+                                    skipped += 1
+                                    continue
 
-    xml_bytes = etree.tostring(
-        rss, xml_declaration=True, encoding="UTF-8", pretty_print=True
-    )
-    return xml_bytes, included, skipped
+                                v_title    = (variant.get("title") or "").strip()
+                                item_title = (
+                                    f"{title} — {v_title}"
+                                    if v_title and v_title.lower() != "default title"
+                                    else title
+                                )[:150]
 
+                                price_str = _convert_price(
+                                    raw_price, shop_currency, currency, rates
+                                )
+                                item_url  = f"{product_url}?variant={v_id}"
+                                sku       = (variant.get("sku") or "").strip()
+
+                                # Build item element in memory, then stream-write it
+                                item = etree.Element("item")
+                                etree.SubElement(item, f"{G}id").text              = v_id
+                                etree.SubElement(item, "title").text               = item_title
+                                etree.SubElement(item, "description").text         = description
+                                etree.SubElement(item, "link").text                = item_url
+                                etree.SubElement(item, f"{G}image_link").text      = all_images[0]
+                                for extra in all_images[1:6]:
+                                    etree.SubElement(
+                                        item, f"{G}additional_image_link"
+                                    ).text = extra
+                                etree.SubElement(
+                                    item, f"{G}availability"
+                                ).text = "in stock" if available else "out of stock"
+                                etree.SubElement(item, f"{G}price").text           = price_str
+                                etree.SubElement(item, f"{G}condition").text       = "new"
+                                if vendor:
+                                    etree.SubElement(item, f"{G}brand").text       = vendor
+                                if product_type:
+                                    etree.SubElement(
+                                        item, f"{G}product_type"
+                                    ).text = product_type
+                                etree.SubElement(item, f"{G}item_group_id").text   = p_id
+                                if sku:
+                                    etree.SubElement(item, f"{G}mpn").text         = sku
+                                if tags:
+                                    etree.SubElement(
+                                        item, f"{G}custom_label_0"
+                                    ).text = ", ".join(tags[:10])
+
+                                xf.write(item)
+                                included += 1
+
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    return included, skipped
+
+
+# ── Main pipeline ──────────────────────────────────────────────────────────────
 
 async def generate_feeds_public(
     shop_domain:   str,
     shop_currency: str = "USD",
+    progress_cb:   ProgressCb = _noop_cb,
 ) -> dict:
     """
-    Full pipeline: fetch → generate → write XML files.
-    Returns a result dict with stats and feed URLs.
+    Full pipeline: fetch → generate 23 XML feeds → write to disk.
+    Designed for 50k–70k+ product catalogues.
+    Calls progress_cb with status dicts throughout for live UI updates.
     """
     shop_domain = shop_domain.strip().lower()
-    # sanitise
-    shop_domain = shop_domain.replace("https://", "").replace("http://", "").split("/")[0]
+    shop_domain = (
+        shop_domain.replace("https://", "").replace("http://", "").split("/")[0]
+    )
     if ".myshopify.com" in shop_domain:
         shop_domain = shop_domain.split(".myshopify.com")[0] + ".myshopify.com"
     elif not shop_domain.endswith(".myshopify.com"):
         shop_domain += ".myshopify.com"
 
-    slug      = shop_to_slug(shop_domain)
-    shop_url  = f"https://{shop_domain}"
+    slug     = shop_to_slug(shop_domain)
+    shop_url = f"https://{shop_domain}"
 
-    # Fetch
-    products, shop_name = await fetch_products_public(shop_domain)
+    # ── Phase 1: Fetch all products ───────────────────────────────────────────
+    progress_cb({"phase": "fetching", "page": 0, "products": 0,
+                 "message": "Connecting to store…"})
+
+    products, shop_name = await fetch_products_public(shop_domain, progress_cb)
+
     if not products:
         raise RuntimeError("No products found. Store may be password-protected.")
 
-    # Exchange rates
+    total_products = len(products)
+    logger.info("[%s] %d products fetched — starting XML generation for %d regions",
+                shop_domain, total_products, len(FEED_REGIONS))
+
+    # ── Phase 2: Exchange rates ───────────────────────────────────────────────
+    progress_cb({"phase": "rates", "products": total_products,
+                 "message": f"{total_products:,} products fetched — loading exchange rates…"})
+
     rates = await get_exchange_rates(base="USD", ttl=3600)
 
-    # Generate + write
-    total_included = 0
-    for region, (country, currency, _flag) in FEED_REGIONS.items():
-        xml_bytes, included, _skipped = _build_feed_public(
-            shop_domain, shop_name, shop_url,
+    # ── Phase 3: Generate XML for each region (streaming) ─────────────────────
+    total_regions = len(FEED_REGIONS)
+    last_included = 0
+
+    for idx, (region, (country, currency, _flag)) in enumerate(FEED_REGIONS.items(), 1):
+        progress_cb({
+            "phase":         "generating",
+            "region":        region,
+            "region_name":   country,
+            "region_num":    idx,
+            "total_regions": total_regions,
+            "products":      total_products,
+            "message": (
+                f"Building XML feed {idx}/{total_regions}: "
+                f"{country} ({currency})…"
+            ),
+        })
+
+        path = os.path.join(settings.FEEDS_DIR, slug, f"{region}.xml")
+        included, skipped = _build_feed_streaming(
+            path, shop_name, shop_url,
             products, currency, shop_currency, rates,
         )
-        path = os.path.join(settings.FEEDS_DIR, slug, f"{region}.xml")
-        _atomic_write(path, xml_bytes)
-        total_included = included
+        last_included = included
+        logger.info("[%s] %s feed written — %d items (%d skipped)",
+                    shop_domain, region.upper(), included, skipped)
 
     feed_urls = {
         region: f"{settings.APP_URL}/feed/{slug}/{region}.xml"
         for region in FEED_REGIONS
     }
 
+    progress_cb({
+        "phase":     "done",
+        "products":  total_products,
+        "items":     last_included,
+        "feed_urls": feed_urls,
+        "message":   "All feeds generated successfully!",
+    })
+
     logger.info(
-        "[%s] public feed generation complete: %d products, %d items/feed",
-        shop_domain, len(products), total_included,
+        "[%s] generation complete — %d products, %d items/feed, %d regions",
+        shop_domain, total_products, last_included, total_regions,
     )
 
     return {
-        "shop_domain":  shop_domain,
-        "shop_name":    shop_name,
-        "slug":         slug,
-        "products":     len(products),
-        "items":        total_included,
-        "feed_count":   len(FEED_REGIONS),
-        "feed_urls":    feed_urls,
+        "shop_domain": shop_domain,
+        "shop_name":   shop_name,
+        "slug":        slug,
+        "products":    total_products,
+        "items":       last_included,
+        "feed_count":  total_regions,
+        "feed_urls":   feed_urls,
     }
