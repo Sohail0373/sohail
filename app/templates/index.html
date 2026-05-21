@@ -257,13 +257,20 @@ function applyJobState(job, jobId){
 
   if(phase==='fetching' || phase==='queued'){
     setStage('fetching');
-    const page  = job.page     || 0;
     const prods = job.products || 0;
-    // 0–60% during fetch
-    const pct = page>0 ? Math.min(3 + page * 0.5, 60) : 5;
-    setProgress(pct,
-      `Fetching page ${page} from Shopify…`,
-      prods>0 ? `${prods.toLocaleString()} products fetched so far` : ''
+    const msg   = job.message  || '';
+    // Phase 1 (products.json): pages grow, capped at ~40%
+    // Phase 2 (collections): message says "[Phase 2]", use 40–62%
+    const isP2  = msg.includes('Phase 2') || msg.includes('Collection');
+    const page  = job.page || 0;
+    const pct   = isP2
+      ? Math.min(40 + page * 0.3, 62)
+      : (page > 0 ? Math.min(3 + page * 0.37, 40) : 5);
+    const main  = isP2
+      ? `Scanning collections for remaining products…`
+      : `Fetching from Shopify (page ${page})…`;
+    setProgress(pct, main,
+      prods > 0 ? `${prods.toLocaleString()} products fetched so far` : ''
     );
   }
   else if(phase==='rates'){
