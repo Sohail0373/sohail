@@ -221,6 +221,7 @@ async def _fetch_new_products_from_collection(
     Updates seen_ids in-place.
     """
     new_products: list[dict] = []
+    page = 0  # tracks pages fetched so far — used for page-param fallback
     next_url: str | None = (
         f"https://{shop_domain}/collections/{handle}/products.json?limit=250"
     )
@@ -236,23 +237,25 @@ async def _fetch_new_products_from_collection(
         if not batch:
             break
 
+        page += 1  # increment AFTER confirming we got products
+
         for p in batch:
             pid = str(p.get("id", ""))
             if pid and pid not in seen_ids:
                 seen_ids.add(pid)
                 new_products.append(p)
 
+        # Cursor-based next page (preferred)
         next_url = _parse_link_next(r.headers)
+
+        # Page-param fallback: batch was full but Shopify gave no cursor.
+        # `page` is now the page we just fetched, so next = page + 1.
         if not next_url and len(batch) == 250:
-            # This collection has >250 products — follow page param
-            page_num = (
-                int(re.search(r'[?&]page=(\d+)', next_url or "0").group(1))
-                if next_url else 0
-            ) + 1
             next_url = (
                 f"https://{shop_domain}/collections/{handle}/products.json"
-                f"?limit=250&page={page_num}"
+                f"?limit=250&page={page + 1}"
             )
+
         if next_url:
             await asyncio.sleep(random.uniform(0.4, 0.8))
 
@@ -274,12 +277,9 @@ async def _phase2_collections(
 
     progress_cb({
         "phase":    "fetching",
-        "page":     0,
+        "page":     -1,   # sentinel: UI reads page<0 as "Phase 2 loading collections"
         "products": phase1_count,
-        "message": (
-            f"Phase 1 done — {phase1_count:,} products. "
-            "Scanning collections for remaining products…"
-        ),
+        "message":  f"[Phase 2] Loading collection list… ({phase1_count:,} products so far)",
     })
 
     handles = await _get_all_collection_handles(shop_domain, client)

@@ -259,19 +259,27 @@ function applyJobState(job, jobId){
     setStage('fetching');
     const prods = job.products || 0;
     const msg   = job.message  || '';
-    // Phase 1 (products.json): pages grow, capped at ~40%
-    // Phase 2 (collections): message says "[Phase 2]", use 40–62%
-    const isP2  = msg.includes('Phase 2') || msg.includes('Collection');
-    const page  = job.page || 0;
-    const pct   = isP2
-      ? Math.min(40 + page * 0.3, 62)
-      : (page > 0 ? Math.min(3 + page * 0.37, 40) : 5);
-    const main  = isP2
-      ? `Scanning collections for remaining products…`
-      : `Fetching from Shopify (page ${page})…`;
-    setProgress(pct, main,
-      prods > 0 ? `${prods.toLocaleString()} products fetched so far` : ''
-    );
+    const page  = job.page     || 0;
+    // page < 0  → Phase 2 just started (loading collections list)
+    // "[Phase 2]" in msg → Phase 2 collection scanning in progress
+    // otherwise → Phase 1 products.json
+    const isP2start = page < 0;
+    const isP2scan  = msg.includes('[Phase 2]') || msg.includes('Collection');
+    let pct, main, detail;
+    if(isP2start){
+      pct    = 42;
+      main   = 'Phase 2: Loading all collections…';
+      detail = `${prods.toLocaleString()} products from Phase 1`;
+    } else if(isP2scan){
+      pct    = Math.min(42 + page * 0.25, 65);
+      main   = 'Phase 2: Scanning collections for remaining products…';
+      detail = `${prods.toLocaleString()} products total so far`;
+    } else {
+      pct    = page > 0 ? Math.min(3 + page * 0.37, 40) : 5;
+      main   = page > 0 ? `Phase 1: Fetching page ${page} from Shopify…` : 'Connecting to store…';
+      detail = prods > 0 ? `${prods.toLocaleString()} products fetched so far` : '';
+    }
+    setProgress(pct, main, detail);
   }
   else if(phase==='rates'){
     setStage('rates');
