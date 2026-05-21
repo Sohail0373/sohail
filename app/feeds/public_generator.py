@@ -269,26 +269,60 @@ async def _phase2_collections(
     progress_cb: ProgressCb,
 ) -> None:
     """
-    Supplement products_by_id with products from every collection
-    that were missed by /products.json (due to Shopify's 25k cap).
+    Supplement products_by_id with every product missed by /products.json.
+
+    Step A — /collections/all  (built into EVERY Shopify store, even ones
+              with zero manual collections — contains ALL published products)
+    Step B — individual named collections (catches any remaining gaps)
+
+    Both steps deduplicate against seen_ids so no product is double-counted.
     """
-    seen_ids = set(products_by_id.keys())
+    seen_ids    = set(products_by_id.keys())
     phase1_count = len(products_by_id)
+
+    # ── Step A: /collections/all ──────────────────────────────────────────────
+    # Every Shopify store exposes this special pseudo-collection regardless of
+    # whether the merchant has created any manual/smart collections.
+    progress_cb({
+        "phase":    "fetching",
+        "page":     -1,
+        "products": phase1_count,
+        "message":  f"[Phase 2] Fetching /collections/all… ({phase1_count:,} from Phase 1)",
+    })
+    logger.info("[%s] Phase 2 Step A: /collections/all", shop_domain)
+
+    all_new = await _fetch_new_products_from_collection(
+        shop_domain, "all", client, seen_ids
+    )
+    for p in all_new:
+        pid = str(p.get("id", ""))
+        if pid:
+            products_by_id[pid] = p
+
+    after_all = len(products_by_id)
+    logger.info("[%s] /collections/all gave %d new products (total now %d)",
+                shop_domain, len(all_new), after_all)
 
     progress_cb({
         "phase":    "fetching",
-        "page":     -1,   # sentinel: UI reads page<0 as "Phase 2 loading collections"
-        "products": phase1_count,
-        "message":  f"[Phase 2] Loading collection list… ({phase1_count:,} products so far)",
+        "page":     -1,
+        "products": after_all,
+        "message": (
+            f"[Phase 2] /collections/all done — +{len(all_new):,} new "
+            f"(total {after_all:,}). Scanning named collections…"
+        ),
     })
 
+    # ── Step B: named collections (mop-up pass) ───────────────────────────────
+    # Some products appear in collections but not in /collections/all if their
+    # storefront availability is restricted to specific channels.
     handles = await _get_all_collection_handles(shop_domain, client)
     if not handles:
-        logger.warning("[%s] no collections found — staying with %d products",
-                       shop_domain, phase1_count)
+        logger.info("[%s] no named collections — Phase 2 complete with %d products",
+                    shop_domain, after_all)
         return
 
-    total_new = 0
+    total_new_b = 0
     for i, handle in enumerate(handles, 1):
         new_prods = await _fetch_new_products_from_collection(
             shop_domain, handle, client, seen_ids
@@ -297,7 +331,7 @@ async def _phase2_collections(
             pid = str(p.get("id", ""))
             if pid:
                 products_by_id[pid] = p
-        total_new += len(new_prods)
+        total_new_b += len(new_prods)
 
         if new_prods or i % 10 == 0:
             total = len(products_by_id)
@@ -311,13 +345,13 @@ async def _phase2_collections(
                 ),
             })
 
-        logger.debug("[%s] collection '%s' → %d new products (total %d)",
+        logger.debug("[%s] '%s' → %d new (total %d)",
                      shop_domain, handle, len(new_prods), len(products_by_id))
 
     logger.info(
-        "[%s] Phase 2 done — %d collections scanned, %d new products found, "
-        "grand total %d",
-        shop_domain, len(handles), total_new, len(products_by_id),
+        "[%s] Phase 2 done — /collections/all: +%d, named collections: +%d, "
+        "grand total: %d",
+        shop_domain, len(all_new), total_new_b, len(products_by_id),
     )
 
 
