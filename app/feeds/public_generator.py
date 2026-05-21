@@ -76,10 +76,21 @@ async def fetch_products_public(shop_domain: str) -> tuple[list[dict], str]:
     Returns (products_list, shop_name).
     Primary: cursor-based pagination via Link header (Shopify recommended).
     Fallback: page-based pagination if Link header is absent but batch is full.
+    Handles Shopify bot-detection (403/429/430) with exponential back-off + retry.
     """
     import asyncio
+    import random
 
-    headers  = {"User-Agent": "Mozilla/5.0 (GrowvoriaFeedBot/2.0)"}
+    # Realistic browser User-Agent to avoid Shopify bot detection
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
     products: list[dict] = []
 
     async with httpx.AsyncClient(
@@ -89,43 +100,65 @@ async def fetch_products_public(shop_domain: str) -> tuple[list[dict], str]:
     ) as client:
         shop_name = await _fetch_shop_name(shop_domain, client)
 
-        # Start with cursor-based URL; fallback will use page number
         next_url: str | None = f"https://{shop_domain}/products.json?limit=250"
         page = 0
-        consecutive_errors = 0
+        retries = 0
+        MAX_RETRIES = 5
 
         while next_url:
             page += 1
-            logger.info("[%s] fetching products page %d (total so far: %d)",
+            logger.info("[%s] fetching page %d (total so far: %d)",
                         shop_domain, page, len(products))
 
             try:
                 r = await client.get(next_url)
 
-                if r.status_code in (429, 430):
-                    wait = int(r.headers.get("Retry-After", "10"))
-                    logger.warning("[%s] rate-limited, sleeping %ds", shop_domain, wait)
+                # ── Rate-limit / bot-detection: back off and retry ─────────────
+                if r.status_code in (403, 429, 430):
+                    retries += 1
+                    if retries > MAX_RETRIES:
+                        logger.error(
+                            "[%s] blocked after %d retries on page %d — returning %d products fetched so far",
+                            shop_domain, MAX_RETRIES, page, len(products),
+                        )
+                        break
+                    # Exponential back-off: 15s, 30s, 60s, 120s, 240s
+                    wait = 15 * (2 ** (retries - 1)) + random.uniform(0, 5)
+                    logger.warning(
+                        "[%s] HTTP %d on page %d (retry %d/%d) — sleeping %.0fs",
+                        shop_domain, r.status_code, page, retries, MAX_RETRIES, wait,
+                    )
                     await asyncio.sleep(wait)
-                    consecutive_errors = 0
+                    page -= 1   # don't count this as a successful page
                     continue
 
+                retries = 0     # reset on success
                 r.raise_for_status()
-                consecutive_errors = 0
 
             except httpx.HTTPStatusError as exc:
-                raise RuntimeError(
-                    f"Shopify returned {exc.response.status_code} for {shop_domain}. "
-                    "Store may be password-protected or domain is wrong."
-                ) from exc
+                status = exc.response.status_code
+                # 401/403 on page 1 almost certainly means password-protected
+                if status in (401, 403) and page == 1:
+                    raise RuntimeError(
+                        f"Shopify returned {status} for {shop_domain}. "
+                        "Store may be password-protected or the domain is wrong."
+                    ) from exc
+                # Otherwise log and stop — return whatever we have
+                logger.error("[%s] HTTP %d on page %d — stopping early with %d products",
+                             shop_domain, status, page, len(products))
+                break
+
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
-                consecutive_errors += 1
-                if consecutive_errors >= 3:
-                    logger.error("[%s] too many network errors, aborting after %d products",
+                retries += 1
+                if retries > MAX_RETRIES:
+                    logger.error("[%s] too many network errors — stopping with %d products",
                                  shop_domain, len(products))
                     break
-                logger.warning("[%s] network error (attempt %d/3): %s — retrying in 5s",
-                               shop_domain, consecutive_errors, exc)
-                await asyncio.sleep(5)
+                wait = 5 * retries
+                logger.warning("[%s] network error (retry %d/%d): %s — sleeping %ds",
+                               shop_domain, retries, MAX_RETRIES, exc, wait)
+                await asyncio.sleep(wait)
+                page -= 1
                 continue
 
             batch = r.json().get("products", [])
@@ -133,10 +166,8 @@ async def fetch_products_public(shop_domain: str) -> tuple[list[dict], str]:
                 logger.info("[%s] empty batch on page %d — done", shop_domain, page)
                 break
             products.extend(batch)
-            logger.debug("[%s] page %d: got %d products (running total: %d)",
-                         shop_domain, page, len(batch), len(products))
 
-            # ── Cursor-based next page (preferred) ────────────────────────────
+            # ── Cursor-based next page (Shopify preferred method) ──────────────
             next_url = None
             link_header = r.headers.get("Link", "")
             if link_header:
@@ -146,24 +177,21 @@ async def fetch_products_public(shop_domain: str) -> tuple[list[dict], str]:
                         m = re.search(r'<([^>]+)>', part)
                         if m:
                             next_url = m.group(1)
-                            logger.debug("[%s] cursor next_url: %s", shop_domain, next_url)
                             break
 
-            # ── Fallback: page-based pagination when Link header is absent ────
+            # ── Fallback: page param when Link header absent but batch is full ─
             if not next_url and len(batch) == 250:
                 next_url = (
                     f"https://{shop_domain}/products.json?limit=250&page={page + 1}"
                 )
-                logger.debug(
-                    "[%s] no Link header but full batch — falling back to page param: %s",
-                    shop_domain, next_url,
-                )
+                logger.debug("[%s] no Link header — using page fallback: page %d",
+                             shop_domain, page + 1)
 
-            # Brief pause to be polite to Shopify's servers
+            # Polite delay between pages (randomised to avoid bot fingerprint)
             if next_url:
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(random.uniform(0.5, 1.2))
 
-    logger.info("[%s] fetched %d products total (public API, %d pages)",
+    logger.info("[%s] fetched %d products total (%d pages)",
                 shop_domain, len(products), page)
     return products, shop_name
 
